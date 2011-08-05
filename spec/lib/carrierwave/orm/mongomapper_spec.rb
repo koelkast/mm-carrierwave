@@ -1,21 +1,21 @@
 # encoding: utf-8
 require 'spec_helper'
-require 'mongo_mapper'
-require 'lib/carrierwave/orm/mongomapper'
 
-MongoMapper.database = "carrierwave_test"
-
+MongoMapper.database = "carrierwave_mongomapper_test"
 
 def reset_mongo_class(uploader = MongoUploader)
-  class_name = 'MongoUser'
-  Object.send(:remove_const, class_name) rescue nil
-  klass = Object.const_set(class_name, Class.new)
-  klass.class_eval do
+  define_mongo_class('MongoUser') do
     include MongoMapper::Document
     set_collection_name :users
-
+    key :folder, String, :default => ''
     mount_uploader :image, uploader
   end
+end
+
+def define_mongo_class(class_name, &block)
+  Object.send(:remove_const, class_name) rescue nil
+  klass = Object.const_set(class_name, Class.new)
+  klass.class_eval(&block)
   klass
 end
 
@@ -23,7 +23,7 @@ class MongoUploader < CarrierWave::Uploader::Base; end
 
 class WhiteListUploader < CarrierWave::Uploader::Base
   def extension_white_list
-    %(txt)
+    %w(txt)
   end
 end
 
@@ -33,7 +33,7 @@ class ProcessingErrorUploader < CarrierWave::Uploader::Base
     raise CarrierWave::ProcessingError, "Ohh noez!"
   end
   def extension_white_list
-    %(jpg)
+    %w(jpg)
   end
 end
 
@@ -42,6 +42,12 @@ describe CarrierWave::MongoMapper do
 
   after do
     MongoUser.collection.drop
+  end
+  
+  after(:all) do
+    path = File.join(public_path, "uploads", "*")
+    `rm -rf #{path}`
+    # FileUtils.rm_rf(path)
   end
 
   describe '#image' do
@@ -63,7 +69,7 @@ describe CarrierWave::MongoMapper do
 
       before do
         mongo_user_klass = reset_mongo_class
-        @document = mongo_user_klass.new(:image_filename => "")
+        @document = mongo_user_klass.new(:image => "")
         @document.save
       end
 
@@ -78,7 +84,9 @@ describe CarrierWave::MongoMapper do
 
       before do
         mongo_user_klass = reset_mongo_class
-        @document = mongo_user_klass.new(:image_filename => "test.jpg")
+        @document = mongo_user_klass.new
+        # should retrieve a file from the storage if a value is stored in the database
+        @document[:image] = "test.jpg" # NOT @document.image = 'text.jpg'
         @document.save
         @doc = MongoUser.first
       end
@@ -128,7 +136,7 @@ describe CarrierWave::MongoMapper do
       end
 
       it "should write nothing to the database, to prevent overriden filenames to fail because of unassigned attributes" do
-        @doc.image_filename.should be_nil
+        @doc[:image].should be_nil
       end
 
       it "should copy a file into into the cache directory" do
@@ -149,16 +157,17 @@ describe CarrierWave::MongoMapper do
         @doc.should_not be_valid
       end
 
-      pending "should use I18n for integrity error messages" do
+      it "should use I18n for integrity error messages" do
+        pending "implementation"
         @doc.valid?
         @doc.errors[:image].should == ['is not an allowed file type']
 
-        change_locale_and_store_translations(:pt, :carrierwave => {
+        change_locale_and_store_translations(:pt, :mongoid => {
           :errors => {
-            :messages => {
-              :carrierwave_integrity_error => 'tipo de imagem não permitido.'
-            }
-          }
+          :messages => {
+          :carrierwave_integrity_error => 'tipo de imagem não permitido.'
+        }
+        }
         }) do
           @doc.should_not be_valid
           @doc.errors[:image].should == ['tipo de imagem não permitido.']
@@ -177,16 +186,17 @@ describe CarrierWave::MongoMapper do
         @doc.should_not be_valid
       end
 
-      pending "should use I18n for processing error messages" do
+      it "should use I18n for processing error messages" do
+        pending "implementation"
         @doc.valid?
         @doc.errors[:image].should == ['failed to be processed']
 
-        change_locale_and_store_translations(:pt, :carrierwave => {
+        change_locale_and_store_translations(:pt, :mongoid => {
           :errors => {
-            :messages => {
-              :carrierwave_processing_error => 'falha ao processar imagem.'
-            }
-          }
+          :messages => {
+          :carrierwave_processing_error => 'falha ao processar imagem.'
+        }
+        }
         }) do
           @doc.should_not be_valid
           @doc.errors[:image].should == ['falha ao processar imagem.']
@@ -198,6 +208,13 @@ describe CarrierWave::MongoMapper do
 
   describe "#save" do
 
+    it "after it was initialized with params" do
+      doc = reset_mongo_class.new(:image => stub_file('test.jpg'))
+      doc.save.should be_true
+      doc.image.should be_an_instance_of(MongoUploader)
+      doc.image.current_path.should == public_path('uploads/test.jpg')
+    end
+
     before do
       mongo_user_klass = reset_mongo_class
       @doc = mongo_user_klass.new
@@ -206,7 +223,7 @@ describe CarrierWave::MongoMapper do
     context "when no file is assigned" do
 
       it "image is blank" do
-        @doc.save
+        @doc.save.should be_true
         @doc.image.should be_blank
       end
 
@@ -216,15 +233,16 @@ describe CarrierWave::MongoMapper do
 
       it "copies the file to the upload directory" do
         @doc.image = stub_file('test.jpg')
-        @doc.save
+        @doc.save.should be_true
         @doc.image.should be_an_instance_of(MongoUploader)
         @doc.image.current_path.should == public_path('uploads/test.jpg')
       end
 
       it "saves the filename in the database" do
         @doc.image = stub_file('test.jpg')
-        @doc.save
-        @doc.image_filename.should == 'test.jpg'
+        @doc.save.should be_true
+        @doc[:image].should == 'test.jpg'
+        @doc.image_identifier.should == 'test.jpg'
       end
 
       context "when remove_image? is true" do
@@ -233,14 +251,45 @@ describe CarrierWave::MongoMapper do
           @doc.image = stub_file('test.jpeg')
           @doc.save
           @doc.remove_image = true
-          @doc.save
+          @doc.save.should be_true
           @doc.reload
           @doc.image.should be_blank
-          @doc.image_filename.should == ''
+          @doc.image_identifier.should == ''
         end
 
       end
 
+      it "should mark image as changed when saving a new image" do
+        @doc.image_changed?.should be_false
+        @doc.image = stub_file("test.jpeg")
+        @doc.image_changed?.should be_true
+        @doc.save
+        @doc.reload
+        @doc.image_changed?.should be_false
+        @doc.image = stub_file("test.jpg")
+        @doc.image_changed?.should be_true
+      end
+
+    end
+
+  end
+
+  describe '#update' do
+
+    before do
+      mongo_user_klass = reset_mongo_class
+      @doc = mongo_user_klass.new
+      @doc.image = stub_file('test.jpeg')
+      @doc.save
+      @doc.reload
+    end
+
+    it "replaced it by a file with the same name" do
+      @doc.image = stub_file('test.jpeg')
+      @doc.save
+      @doc.reload
+      @doc[:image].should == 'test.jpeg'
+      @doc.image_identifier.should == 'test.jpeg'
     end
 
   end
@@ -285,5 +334,244 @@ describe CarrierWave::MongoMapper do
 
   end
 
+  describe '#mount_uploader removing old files' do
+
+    before do
+      @uploader = Class.new(MongoUploader)
+      @class = reset_mongo_class(@uploader)
+      @class.key :foo
+      @doc = @class.new
+      @doc.image = stub_file('old.jpeg')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_true
+    end
+
+    describe 'normally' do
+
+      it "should remove old file if old file had a different path" do
+        @doc.image = stub_file('new.jpeg')
+        @doc.save.should be_true
+        File.exists?(public_path('uploads/new.jpeg')).should be_true
+        File.exists?(public_path('uploads/old.jpeg')).should be_false
+      end
+
+      it "should not remove old file if old file had a different path but config is false" do
+        @uploader.stub!(:remove_previously_stored_files_after_update).and_return(false)
+        @doc.image = stub_file('new.jpeg')
+        @doc.save.should be_true
+        File.exists?(public_path('uploads/new.jpeg')).should be_true
+        File.exists?(public_path('uploads/old.jpeg')).should be_true
+      end
+
+      it "should not remove file if old file had the same path" do
+        @doc.image = stub_file('old.jpeg')
+        @doc.save.should be_true
+        File.exists?(public_path('uploads/old.jpeg')).should be_true
+      end
+
+      it "should not remove file if validations fail on save" do
+        @class.validate { |r| r.errors.add :textfile, "FAIL!" }
+        @doc.image = stub_file('new.jpeg')
+        @doc.save.should be_false
+        File.exists?(public_path('uploads/old.jpeg')).should be_true
+      end
+    end
+
+    describe 'with an overriden filename' do
+      before do
+        @uploader.class_eval do
+          def filename
+            model.foo + File.extname(super)
+          end
+        end
+
+        @doc.image = stub_file('old.jpeg')
+        @doc.foo = "test"
+        @doc.save.should be_true
+        File.exists?(public_path('uploads/test.jpeg')).should be_true
+        @doc.image.read.should == "this is stuff"
+      end
+
+      it "should not remove file if old file had the same dynamic path" do
+        @doc.image = stub_file('test.jpeg')
+        @doc.save.should be_true
+        File.exists?(public_path('uploads/test.jpeg')).should be_true
+      end
+
+      it "should remove old file if old file had a different dynamic path" do
+        @doc.foo = "new"
+        @doc.image = stub_file('test.jpeg')
+        @doc.save.should be_true
+        File.exists?(public_path('uploads/new.jpeg')).should be_true
+        File.exists?(public_path('uploads/test.jpeg')).should be_false
+      end
+    end
+
+    describe 'with embedded documents' do
+
+      before do
+        @embedded_doc_class = define_mongo_class('MongoLocation') do
+          include MongoMapper::EmbeddedDocument
+          plugin MongoMapper::Plugins::Dirty
+          mount_uploader :image, @uploader
+          belongs_to :mongo_user
+        end
+
+        @class.class_eval do
+          many :mongo_locations
+        end
+
+        @doc = @class.new
+        @embedded_doc = @doc.mongo_locations.build
+        @embedded_doc.image = stub_file('old.jpeg')
+        @embedded_doc.save.should be_true
+      end
+      
+      after do
+        path = File.join(public_path, "uploads", "*")
+        FileUtils.rm_rf(path)
+      end
+
+      it "should remove old file if old file had a different path" do
+        @embedded_doc.image = stub_file('new.jpeg')
+        @embedded_doc.save.should be_true
+        File.exists?(public_path('uploads/new.jpeg')).should be_true
+        File.exists?(public_path('uploads/old.jpeg')).should be_false
+      end
+
+      it "should not remove old file if old file had a different path but config is false" do
+        @embedded_doc.image.stub!(:remove_previously_stored_files_after_update).and_return(false)
+        @embedded_doc.image = stub_file('new.jpeg')
+        @embedded_doc.save.should be_true
+        File.exists?(public_path('uploads/new.jpeg')).should be_true
+        File.exists?(public_path('uploads/old.jpeg')).should be_true
+      end
+
+      it "should not remove file if old file had the same path" do
+        @embedded_doc.image = stub_file('old.jpeg')
+        @embedded_doc.save.should be_true
+        File.exists?(public_path('uploads/old.jpeg')).should be_true
+      end
+
+      it "should not remove file if validations fail on save" do
+        @embedded_doc_class.validate { |r| r.errors.add :textfile, "FAIL!" }
+        @embedded_doc.image = stub_file('new.jpeg')
+        @embedded_doc.save
+        File.exists?(public_path('uploads/old.jpeg')).should be_true
+      end
+
+    end
+  end
+
+  describe '#mount_uploader removing old files with versions' do
+
+    before do
+      @uploader = Class.new(MongoUploader)
+      @uploader.version :thumb
+      @class = reset_mongo_class(@uploader)
+      @doc = @class.new
+      @doc.image = stub_file('old.jpeg')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_true
+      File.exists?(public_path('uploads/thumb_old.jpeg')).should be_true
+    end
+
+    after do
+      FileUtils.rm_rf(file_path("uploads"))
+    end
+
+    it "should remove old file if old file had a different path" do
+      @doc.image = stub_file('new.jpeg')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/new.jpeg')).should be_true
+      File.exists?(public_path('uploads/thumb_new.jpeg')).should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_false
+      File.exists?(public_path('uploads/thumb_old.jpeg')).should be_false
+    end
+
+    it "should not remove file if old file had the same path" do
+      @doc.image = stub_file('old.jpeg')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_true
+      File.exists?(public_path('uploads/thumb_old.jpeg')).should be_true
+    end
+  end
+
+  describe '#mount_uploader removing old files with multiple uploaders' do
+
+    before do
+      @uploader = Class.new(MongoUploader)
+      @class = reset_mongo_class(@uploader)
+      @uploader1 = Class.new(CarrierWave::Uploader::Base)
+      @class.mount_uploader(:textfile, @uploader1)
+      @doc = @class.new
+      @doc.image = stub_file('old.jpeg')
+      @doc.textfile = stub_file('old.txt')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_true
+      File.exists?(public_path('uploads/old.txt')).should be_true
+    end
+
+    after do
+      FileUtils.rm_rf(file_path("uploads"))
+    end
+
+    it "should remove old file1 and file2 if old file1 and file2 had a different paths" do
+      @doc.image = stub_file('new.jpeg')
+      @doc.textfile = stub_file('new.txt')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/new.jpeg')).should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_false
+      File.exists?(public_path('uploads/new.txt')).should be_true
+      File.exists?(public_path('uploads/old.txt')).should be_false
+    end
+
+    it "should remove old file1 but not file2 if old file1 had a different path but old file2 has the same path" do
+      @doc.image = stub_file('new.jpeg')
+      @doc.textfile = stub_file('old.txt')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/new.jpeg')).should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_false
+      File.exists?(public_path('uploads/old.txt')).should be_true
+    end
+
+    it "should not remove file1 or file2 if file1 and file2 have the same paths" do
+      @doc.image = stub_file('old.jpeg')
+      @doc.textfile = stub_file('old.txt')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_true
+      File.exists?(public_path('uploads/old.txt')).should be_true
+    end
+  end
+
+  describe '#mount_uploader removing old files with with mount_on' do
+
+    before do
+      @class = reset_mongo_class
+      @uploader1 = Class.new(CarrierWave::Uploader::Base)
+      @class.mount_uploader(:avatar, @uploader1, :mount_on => :another_image)
+      @doc = @class.new
+      @doc.avatar = stub_file('old.jpeg')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_true
+    end
+
+    after do
+      FileUtils.rm_rf(file_path("uploads"))
+    end
+
+    it "should remove old file if old file had a different path" do
+      @doc.avatar = stub_file('new.jpeg')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/new.jpeg')).should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_false
+    end
+
+    it "should not remove file if old file had the same path" do
+      @doc.avatar = stub_file('old.jpeg')
+      @doc.save.should be_true
+      File.exists?(public_path('uploads/old.jpeg')).should be_true
+    end
+  end
 
 end

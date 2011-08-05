@@ -2,13 +2,12 @@
 
 require "rubygems"
 require "bundler/setup"
-
+require 'rspec'
 require 'tempfile'
-require 'time'
-require 'logger'
+require 'tempfile'
 
 require 'carrierwave'
-require 'timecop'
+require 'carrierwave/orm/mongomapper'
 
 alias :running :lambda
 
@@ -33,13 +32,9 @@ module CarrierWave
     end
 
     module MockFiles
-      def stub_merb_tempfile(filename)
-        raise "#{path} file does not exist" unless File.exist?(file_path(filename))
-
-        t = Tempfile.new(filename)
-        FileUtils.copy_file(file_path(filename), t.path)
-
-        return t
+      def stub_file(filename, mime_type=nil, fake_name=nil)
+        f = File.open(file_path(filename))
+        return f
       end
 
       def stub_tempfile(filename, mime_type=nil, fake_name=nil)
@@ -58,22 +53,6 @@ module CarrierWave
         return t
       end
 
-      def stub_stringio(filename, mime_type=nil, fake_name=nil)
-        if filename
-          t = StringIO.new( IO.read( file_path( filename ) ) )
-        else
-          t = StringIO.new
-        end
-        t.stub!(:local_path).and_return("")
-        t.stub!(:original_filename).and_return(filename || fake_name)
-        t.stub!(:content_type).and_return(mime_type)
-        return t
-      end
-
-      def stub_file(filename, mime_type=nil, fake_name=nil)
-        f = File.open(file_path(filename))
-        return f
-      end
     end
 
     module I18nHelpers
@@ -95,6 +74,5 @@ end
 RSpec.configure do |config|
   config.include CarrierWave::Test::Matchers
   config.include CarrierWave::Test::MockFiles
-  config.include CarrierWave::Test::MockStorage
   config.include CarrierWave::Test::I18nHelpers
 end
