@@ -10,6 +10,9 @@ h2. Status
 
 Everything works except translations of validations right now.
 
+h2. Known Issues
+
+The updates to allow it to automagically remove the previous file if you attach a new one are good to go with the next version of mongo_mapper, as v0.9.1 saves embedded documents even when validations fail.
 
 h2. License
 
